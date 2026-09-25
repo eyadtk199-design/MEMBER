@@ -72,6 +72,13 @@ const commands = [
   new SlashCommandBuilder().setName("balance").setDescription("رصيدك"),
   new SlashCommandBuilder().setName("price").setDescription("عرض سعر الكوين"),
   new SlashCommandBuilder().setName("verify").setDescription("إرسال زر إثبات نفسك"),
+  new SlashCommandBuilder().setName("dm")
+    .setDescription("إرسال رسالة خاصة لعضو واحد مع منشن")
+    .addUserOption(o=>o.setName("member").setDescription("العضو").setRequired(true))
+    .addStringOption(o=>o.setName("message").setDescription("الرسالة").setRequired(true)),
+  new SlashCommandBuilder().setName("dms")
+    .setDescription("إرسال رسالة خاصة لكل أعضاء السيرفر مع منشن")
+    .addStringOption(o=>o.setName("message").setDescription("الرسالة").setRequired(true)),
   new SlashCommandBuilder().setName("refresh").setDescription("إحصائيات المتجر")
 ].map(x=>x.toJSON());
 
@@ -168,6 +175,44 @@ client.on("interactionCreate", async i=>{
       if(i.commandName==="price"){
         return i.reply({content:`💵 سعر الكوين: **${money(db.coinPrice)}**`,ephemeral:true});
       }
+      if(i.commandName==="dm"){
+        if(!ownerOnly(i.user.id)) return i.reply({content:"هذا الأمر للمالك فقط.",ephemeral:true});
+        const member=i.options.getUser("member");
+        const message=i.options.getString("message");
+        try{
+          await member.send(`<@${member.id}> ${message}`);
+          return i.reply({content:`✅ تم إرسال الرسالة إلى <@${member.id}>.`,ephemeral:true});
+        }catch{
+          return i.reply({content:"❌ تعذر إرسال الخاص لهذا العضو (قد يكون الـDM مقفولاً).",ephemeral:true});
+        }
+      }
+
+      if(i.commandName==="dms"){
+        if(!ownerOnly(i.user.id)) return i.reply({content:"هذا الأمر للمالك فقط.",ephemeral:true});
+        const message=i.options.getString("message");
+        await i.deferReply({ephemeral:true});
+        const guild=i.guild;
+        if(!guild) return i.editReply("❌ الأمر يجب استخدامه داخل السيرفر.");
+        try{
+          const members=await guild.members.fetch();
+          let sent=0, failed=0;
+          for(const [,member] of members){
+            if(member.user.bot) continue;
+            try{
+              await member.send(`<@${member.id}> ${message}`);
+              sent++;
+              await new Promise(r=>setTimeout(r,1100));
+            }catch{
+              failed++;
+            }
+          }
+          return i.editReply(`📨 انتهى الإرسال.\n✅ تم الإرسال: **${sent}**\n❌ تعذر الإرسال: **${failed}**`);
+        }catch(e){
+          console.error("DMS error:",e);
+          return i.editReply("❌ حدث خطأ أثناء جلب أعضاء السيرفر.");
+        }
+      }
+
       if(i.commandName==="refresh"){
         if(!ownerOnly(i.user.id)) return i.reply({content:"للمالك فقط.",ephemeral:true});
         const verified=Object.values(db.users).filter(x=>x.verified).length;
