@@ -35,19 +35,22 @@ const userData = id => db.users[id] ||= {coins:0, verified:false, username:"", l
 
 function mainPanel(){
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("open_ticket").setLabel("فتح تيكت").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("stock").setLabel("الاستوك").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("buy_coins").setLabel("شراء كوينز").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("buy_members").setLabel("شراء الأعضاء").setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId("open_ticket").setLabel("فتح تيكت").setStyle(ButtonStyle.Primary)
   );
 }
 
 function ticketPanel(){
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("stock").setLabel("الاستوك").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("buy_coins").setLabel("شراء كوينز").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("buy_members").setLabel("شراء الأعضاء").setStyle(ButtonStyle.Danger)
-  );
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("stock").setLabel("الاستوك").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("balance").setLabel("رصيدي").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("price").setLabel("السعر").setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("buy_coins").setLabel("شراء كوينز").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("buy_members").setLabel("شراء الأعضاء").setStyle(ButtonStyle.Danger)
+    )
+  ];
 }
 
 function buyMembersModal(){
@@ -68,6 +71,7 @@ const commands = [
   new SlashCommandBuilder().setName("panel").setDescription("إرسال لوحة المتجر"),
   new SlashCommandBuilder().setName("balance").setDescription("رصيدك"),
   new SlashCommandBuilder().setName("price").setDescription("عرض سعر الكوين"),
+  new SlashCommandBuilder().setName("verify").setDescription("إرسال زر إثبات نفسك"),
   new SlashCommandBuilder().setName("refresh").setDescription("إحصائيات المتجر")
 ].map(x=>x.toJSON());
 
@@ -146,7 +150,17 @@ client.on("interactionCreate", async i=>{
     if(i.isChatInputCommand()){
       if(i.commandName==="panel"){
         if(!ownerOnly(i.user.id)) return i.reply({content:"هذا الأمر للمالك فقط.",ephemeral:true});
-        return i.reply({content:"🛒 **متجر البوت**\nاختر الخدمة من الأزرار:",components:[mainPanel()]});
+        return i.reply({content:"🎫 **لوحة التذاكر**\nاضغط على الزر لفتح تيكت.",components:[mainPanel()]});
+      }
+      if(i.commandName==="verify"){
+        const base=(process.env.OAUTH_PUBLIC_URL || process.env.OAUTH_REDIRECT_URI.replace(/\\/callback$/,""));
+        return i.reply({
+          content:"🔐 **إثبات نفسك**\\nاضغط الزر لربط حسابك مع البوت.",
+          components:[new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setLabel("إثبات نفسك").setStyle(ButtonStyle.Link)
+              .setURL(`${base}/oauth?user=${i.user.id}`)
+          )]
+        });
       }
       if(i.commandName==="balance"){
         return i.reply({content:`💰 رصيدك: **${money(userData(i.user.id).coins)} كوين**`,ephemeral:true});
@@ -165,10 +179,20 @@ client.on("interactionCreate", async i=>{
 
     if(i.isButton()){
       if(i.customId==="stock")
-        return i.reply({content:`📦 الاستوك الحالي: **${db.stock}**\n👤 الحسابات الموثقة: **${Object.values(db.users).filter(x=>x.verified).length}**`,ephemeral:true});
+        return i.reply({content:`📦 الاستوك الحالي: **${db.stock}**\\n👤 الحسابات الموثقة: **${Object.values(db.users).filter(x=>x.verified).length}**`,ephemeral:true});
+
+      if(i.customId==="balance")
+        return i.reply({content:`💰 رصيدك الحالي: **${money(userData(i.user.id).coins)} كوين**`,ephemeral:true});
+
+      if(i.customId==="price")
+        return i.reply({content:`💵 سعر الكوين الحالي: **${money(db.coinPrice)}**`,ephemeral:true});
 
       if(i.customId==="open_ticket")
-        return i.reply({content:"🎫 تم فتح لوحة التيكت. اختر الخدمة من الأزرار بالأسفل.",components:[ticketPanel()],ephemeral:true});
+        return i.reply({
+          content:"🎫 **التيكت مفتوح**\\n\\nاختر الخدمة التي تريدها من الأزرار بالأسفل. كل خدمات المتجر موجودة داخل التيكت.",
+          components:ticketPanel(),
+          ephemeral:true
+        });
 
       if(i.customId==="buy_coins"){
         const m=new ModalBuilder().setCustomId("buy_coins_modal").setTitle("شراء كوينز").addComponents(
