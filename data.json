@@ -1,0 +1,11 @@
+{
+  "settings": {
+    "coinPrice": 100000,
+    "creditRecipientId": "",
+    "ticketCategoryId": ""
+  },
+  "users": {},
+  "coupons": {},
+  "tickets": {},
+  "requests": {}
+}
