@@ -1,357 +1,61 @@
-require("dotenv").config();
-const fs = require("fs");
-const path = require("path");
-const express = require("express");
-const {
-  Client, GatewayIntentBits, Partials, REST, Routes,
-  SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder,
-  PermissionsBitField
-} = require("discord.js");
-
-const app = express();
-const PORT = Number(process.env.PORT || 3000);
-const DATA_FILE = path.join(__dirname, "..", "data", "data.json");
-
-function load() {
-  try { return JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); }
-  catch { return {users:{},coupons:{},requests:{},stock:0,coinPrice:Number(process.env.COIN_PRICE||100000),nextRequest:1}; }
+require('dotenv').config();
+const fs=require('fs'),path=require('path'),express=require('express');
+const {Client,GatewayIntentBits,Partials,REST,Routes,SlashCommandBuilder,ActionRowBuilder,ButtonBuilder,ButtonStyle,ModalBuilder,TextInputBuilder,TextInputStyle,EmbedBuilder,PermissionsBitField,ActivityType}=require('discord.js');
+const app=express(),PORT=Number(process.env.PORT||3000),DATA_FILE=path.join(__dirname,'..','data','data.json');
+function load(){try{return JSON.parse(fs.readFileSync(DATA_FILE,'utf8'))}catch{return {users:{},coupons:{},requests:{},payments:{},stock:0,coinPrice:Number(process.env.COIN_PRICE||100000),nextRequest:1,nextPayment:1,tickets:{},currencies:{}}}}
+let db=load();db.users??={};db.coupons??={};db.requests??={};db.payments??={};db.tickets??={};db.currencies??={};db.nextRequest??=1;db.nextPayment??=1;save();
+function save(){fs.mkdirSync(path.dirname(DATA_FILE),{recursive:true});fs.writeFileSync(DATA_FILE,JSON.stringify(db,null,2))}
+const client=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMembers,GatewayIntentBits.DirectMessages,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent],partials:[Partials.Channel]});
+const ownerOnly=id=>id===process.env.OWNER_ID, money=n=>Number(n).toLocaleString('en-US');
+const userData=id=>db.users[id]??={coins:0,verified:false,username:'',linkedAt:null};
+const enabledCurrencies=()=>Object.entries(db.currencies).filter(([,c])=>c.enabled!==false);
+function mainPanel(){return new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('open_ticket').setLabel('فتح تيكت').setStyle(ButtonStyle.Primary))}
+function ticketPanel(){return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('buy_members').setLabel('شراء الأعضاء').setStyle(ButtonStyle.Danger),new ButtonBuilder().setCustomId('buy_coins').setLabel('شراء كوينز').setStyle(ButtonStyle.Success)),new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('stock').setLabel('الاستوك').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId('balance').setLabel('رصيدي').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId('close_ticket').setLabel('إغلاق التيكت').setStyle(ButtonStyle.Danger))]}
+function currencyRows(prefix,disabled=false){const arr=enabledCurrencies();const rows=[];for(let i=0;i<arr.length;i+=5){const row=new ActionRowBuilder();for(const [id,c] of arr.slice(i,i+5))row.addComponents(new ButtonBuilder().setCustomId(`${prefix}:${id}`).setLabel(`${c.emoji||'💳'} ${c.name}`.slice(0,80)).setStyle(ButtonStyle.Primary).setDisabled(disabled));rows.push(row)}return rows}
+function buyMembersModal(){return new ModalBuilder().setCustomId('buy_members_modal').setTitle('شراء الخدمة').addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('quantity').setLabel('الكمية').setStyle(TextInputStyle.Short).setRequired(true)),new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('guild_id').setLabel('Server ID').setStyle(TextInputStyle.Short).setRequired(true)),new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('coupon').setLabel('كود الخصم (اختياري)').setStyle(TextInputStyle.Short).setRequired(false)))}
+function buyCoinsModal(){return new ModalBuilder().setCustomId('buy_coins_modal').setTitle('شراء كوينز').addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('amount').setLabel('عدد الكوينز').setStyle(TextInputStyle.Short).setRequired(true)))}
+const commands=[new SlashCommandBuilder().setName('panel').setDescription('إرسال لوحة المتجر'),new SlashCommandBuilder().setName('balance').setDescription('رصيدك'),new SlashCommandBuilder().setName('price').setDescription('عرض سعر الكوين'),new SlashCommandBuilder().setName('verify').setDescription('إثبات حسابك'),new SlashCommandBuilder().setName('dm').setDescription('إرسال DM لعضو').addUserOption(o=>o.setName('member').setDescription('العضو').setRequired(true)).addStringOption(o=>o.setName('message').setDescription('الرسالة').setRequired(true)),new SlashCommandBuilder().setName('dms').setDescription('إرسال DM لكل الأعضاء').addStringOption(o=>o.setName('message').setDescription('الرسالة').setRequired(true)),new SlashCommandBuilder().setName('refresh').setDescription('إحصائيات المتجر'),new SlashCommandBuilder().setName('currency-add').setDescription('إضافة عملة دفع').addStringOption(o=>o.setName('id').setDescription('معرف داخلي مثل credits').setRequired(true)).addStringOption(o=>o.setName('name').setDescription('اسم العملة').setRequired(true)).addStringOption(o=>o.setName('emoji').setDescription('الإيموجي').setRequired(true)).addStringOption(o=>o.setName('receiver').setDescription('حساب الاستلام/المنشن').setRequired(true)).addNumberOption(o=>o.setName('rate').setDescription('كل 1 من العملة = كم من السعر الأساسي').setRequired(true)),new SlashCommandBuilder().setName('currency-remove').setDescription('حذف عملة دفع').addStringOption(o=>o.setName('id').setDescription('معرف العملة').setRequired(true)),new SlashCommandBuilder().setName('currency-list').setDescription('عرض العملات'),new SlashCommandBuilder().setName('currency-edit').setDescription('تعديل تعليمات عملة').addStringOption(o=>o.setName('id').setDescription('معرف العملة').setRequired(true)).addStringOption(o=>o.setName('instruction').setDescription('رسالة الدفع، استخدم {receiver} و {amount} و {orderId}').setRequired(true)),new SlashCommandBuilder().setName('currency-message').setDescription('تعديل رسالة نجاح/رفض العملة').addStringOption(o=>o.setName('id').setDescription('معرف العملة').setRequired(true)).addStringOption(o=>o.setName('type').setDescription('success أو reject').setRequired(true)).addStringOption(o=>o.setName('message').setDescription('الرسالة').setRequired(true))].map(x=>x.toJSON());
+async function register(){const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN);await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID,process.env.GUILD_ID),{body:commands})}
+client.once('ready',async()=>{console.log(`Logged in as ${client.user.tag}`);try{await register()}catch(e){console.error(e.message)}client.user.setActivity('🛒 Store | /panel',{type:ActivityType.Watching})});
+client.on('guildMemberAdd',async m=>{if(m.guild.id===process.env.GUILD_ID)try{await m.send('أهلاً بك 👋\nتم تسجيل دخولك للسيرفر بنجاح ✅\nلو محتاج تثبت حسابك استخدم أمر **/verify** في السيرفر.')}catch{}});
+app.get('/oauth',(req,res)=>{if(!req.query.user)return res.status(400).send('Missing user.');const p=new URLSearchParams({client_id:process.env.CLIENT_ID,response_type:'code',redirect_uri:process.env.OAUTH_REDIRECT_URI,scope:'identify guilds.join',state:String(req.query.user)});res.redirect('https://discord.com/oauth2/authorize?'+p)});
+app.get('/callback',async(req,res)=>{try{if(!req.query.code)return res.status(400).send('Missing OAuth code.');const b=new URLSearchParams({client_id:process.env.CLIENT_ID,client_secret:process.env.OAUTH_CLIENT_SECRET,grant_type:'authorization_code',code:String(req.query.code),redirect_uri:process.env.OAUTH_REDIRECT_URI});const tr=await fetch('https://discord.com/api/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b}),t=await tr.json();if(!t.access_token)return res.status(400).send('OAuth failed.');const mr=await fetch('https://discord.com/api/users/@me',{headers:{Authorization:`Bearer ${t.access_token}`}}),me=await mr.json();const u=userData(me.id);u.verified=true;u.username=me.username;u.linkedAt=new Date().toISOString();u.scopes=['identify','guilds.join'];save();res.send('تم إثبات وربط حسابك بنجاح ✅ يمكنك الرجوع إلى Discord الآن.')}catch(e){console.error(e);res.status(500).send('OAuth error.')}});app.listen(PORT,()=>console.log(`Web server on ${PORT}`));
+async function createTicket(i){const g=i.guild;if(!g)return i.reply({content:'❌ استخدم الزر داخل السيرفر.',ephemeral:true});const existing=Object.values(db.tickets).find(t=>t.guildId===g.id&&t.userId===i.user.id&&t.open);if(existing){const ch=g.channels.cache.get(existing.channelId);return i.reply({content:`❌ عندك تيكت مفتوح بالفعل: ${ch?`<#${ch.id}>`:'تم العثور عليه لكن القناة غير متاحة.'}`,ephemeral:true})}const overwrites=[{id:g.roles.everyone.id,deny:[PermissionsBitField.Flags.ViewChannel]},{id:i.user.id,allow:[PermissionsBitField.Flags.ViewChannel,PermissionsBitField.Flags.SendMessages,PermissionsBitField.Flags.ReadMessageHistory]},{id:client.user.id,allow:[PermissionsBitField.Flags.ViewChannel,PermissionsBitField.Flags.SendMessages,PermissionsBitField.Flags.ReadMessageHistory,PermissionsBitField.Flags.ManageChannels]}];if(process.env.SUPPORT_ROLE_ID)overwrites.push({id:process.env.SUPPORT_ROLE_ID,allow:[PermissionsBitField.Flags.ViewChannel,PermissionsBitField.Flags.SendMessages,PermissionsBitField.Flags.ReadMessageHistory]});const ch=await g.channels.create({name:`ticket-${i.user.username}`.toLowerCase().replace(/[^a-z0-9-_]/g,'').slice(0,70)||`ticket-${i.user.id}`,type:0,parent:process.env.TICKET_CATEGORY_ID||undefined,permissionOverwrites:overwrites});db.tickets[ch.id]={channelId:ch.id,guildId:g.id,userId:i.user.id,open:true,createdAt:new Date().toISOString()};save();await ch.send({content:`🎫 **أهلاً بك <@${i.user.id}>**\nاختار الخدمة المطلوبة من الأسفل.`,components:ticketPanel()});return i.reply({content:`✅ تم فتح التيكت: <#${ch.id}>`,ephemeral:true})}
+function paymentInstruction(c,amount,orderId){return (c.instruction||'انسخ الأمر التالي وأرسله:\n#pay {receiver} {amount}\n\nبعد التحويل اضغط **تم الدفع**.').replaceAll('{receiver}',c.receiver).replaceAll('{amount}',String(amount)).replaceAll('{orderId}',String(orderId))}
+function paymentPreview(currencyId,amount,orderId){const c=db.currencies[currencyId];if(!c)return null;return `💳 **الدفع بـ ${c.emoji||'💳'} ${c.name}**\n\n${paymentInstruction(c,amount,orderId)}\n\n⚠️ البوت لا يعتبر الدفع مؤكداً تلقائياً. اضغط **تم الدفع** بعد التحويل ليصل الطلب للمراجعة.`}
+async function sendPaymentChoice(i,order){const rows=currencyRows(`pay:${order.type}:${order.id}`);if(!rows.length)return i.reply({content:'❌ لا توجد عملات دفع مفعلة. أضف عملة من `/currency-add`.',ephemeral:true});return i.reply({content:`🧾 **طلب #${order.id}**\nالسعر الأساسي: **${money(order.baseCost)}**\n\nاختر طريقة الدفع:`,components:rows,ephemeral:true})}
+client.on('interactionCreate',async i=>{try{
+if(i.isChatInputCommand()){
+ const n=i.commandName;if(['panel','refresh','currency-add','currency-remove','currency-list','currency-edit','currency-message'].includes(n)&&!ownerOnly(i.user.id))return i.reply({content:'هذا الأمر للمالك فقط.',ephemeral:true});
+ if(n==='panel')return i.reply({content:'🎫 **لوحة المتجر**\nاضغط لفتح تيكت.',components:[mainPanel()]});
+ if(n==='verify'){const base=process.env.OAUTH_PUBLIC_URL||process.env.OAUTH_REDIRECT_URI.replace(/\/callback$/,'');return i.reply({content:'🔐 **إثبات نفسك**\nاضغط الزر لربط حسابك.',components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('إثبات نفسك').setStyle(ButtonStyle.Link).setURL(`${base}/oauth?user=${i.user.id}`))],ephemeral:true})}
+ if(n==='balance')return i.reply({content:`💰 رصيدك: **${money(userData(i.user.id).coins)} كوين**`,ephemeral:true});
+ if(n==='price')return i.reply({content:`💵 سعر الكوين: **${money(db.coinPrice)}**`,ephemeral:true});
+ if(n==='dm'){const u=i.options.getUser('member'),m=i.options.getString('message');try{await u.send(`<@${u.id}> ${m}`);return i.reply({content:`✅ تم إرسال الرسالة إلى <@${u.id}>.`,ephemeral:true})}catch{return i.reply({content:'❌ تعذر إرسال الخاص.',ephemeral:true})}}
+ if(n==='dms'){await i.deferReply({ephemeral:true});const g=i.guild;if(!g)return i.editReply('❌ داخل السيرفر فقط.');let sent=0,failed=0;for(const [,m] of await g.members.fetch()){if(m.user.bot)continue;try{await m.send(`<@${m.id}> ${i.options.getString('message')}`);sent++;await new Promise(r=>setTimeout(r,1100))}catch{failed++}}return i.editReply(`📨 انتهى الإرسال.\n✅ ${sent}\n❌ ${failed}`)}
+ if(n==='refresh'){const v=Object.values(db.users).filter(x=>x.verified).length;return i.reply({content:`📊 Verified: **${v}**\n📦 Stock: **${db.stock}**\n📝 Orders: **${Object.keys(db.requests).length}**\n💳 Currencies: **${enabledCurrencies().length}**`,ephemeral:true})}
+ if(n==='currency-add'){const id=i.options.getString('id').toLowerCase(),rate=i.options.getNumber('rate');if(!/^[a-z0-9_-]{2,30}$/.test(id)||rate<=0)return i.reply({content:'❌ ID أو Rate غير صحيح.',ephemeral:true});db.currencies[id]={name:i.options.getString('name'),emoji:i.options.getString('emoji'),receiver:i.options.getString('receiver'),rate,enabled:true,instruction:'انسخ الأمر التالي وأرسله:\n#pay {receiver} {amount}\n\nبعد التحويل اضغط **تم الدفع**.',successMessage:'✅ تم تأكيد الدفع لطلبك **#{orderId}**.',rejectMessage:'❌ تم رفض الدفع لطلبك **#{orderId}**.'};save();return i.reply({content:`✅ تمت إضافة العملة **${db.currencies[id].name}**. استخدم /currency-edit لتغيير تعليمات الدفع.`,ephemeral:true})}
+ if(n==='currency-remove'){const id=i.options.getString('id').toLowerCase();if(!db.currencies[id])return i.reply({content:'❌ العملة غير موجودة.',ephemeral:true});delete db.currencies[id];save();return i.reply({content:'✅ تم حذف العملة.',ephemeral:true})}
+ if(n==='currency-list'){const lines=Object.entries(db.currencies).map(([id,c])=>`${c.emoji||'💳'} **${c.name}** — ID: ${id} — Rate: ${c.rate} — ${c.enabled===false?'🔴':'🟢'}`);return i.reply({content:lines.join('\n')||'لا توجد عملات.',ephemeral:true})}
+ if(n==='currency-edit'){const id=i.options.getString('id').toLowerCase(),c=db.currencies[id];if(!c)return i.reply({content:'❌ العملة غير موجودة.',ephemeral:true});c.instruction=i.options.getString('instruction');save();return i.reply({content:'✅ تم حفظ تعليمات الدفع. المتغيرات: `{receiver}` `{amount}` `{orderId}`',ephemeral:true})}
+ if(n==='currency-message'){const id=i.options.getString('id').toLowerCase(),c=db.currencies[id],type=i.options.getString('type');if(!c||!['success','reject'].includes(type))return i.reply({content:'❌ بيانات غير صحيحة.',ephemeral:true});c[type==='success'?'successMessage':'rejectMessage']=i.options.getString('message');save();return i.reply({content:'✅ تم حفظ الرسالة.',ephemeral:true})}
 }
-let db = load();
-function save(){ fs.writeFileSync(DATA_FILE, JSON.stringify(db,null,2)); }
-
-const client = new Client({
-  intents:[
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.DirectMessages
-  ],
-  partials:[Partials.Channel]
-});
-
-const ownerOnly = id => id === process.env.OWNER_ID;
-const money = n => Number(n).toLocaleString("en-US");
-const userData = id => db.users[id] ||= {coins:0, verified:false, username:"", linkedAt:null};
-
-function mainPanel(){
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("open_ticket").setLabel("فتح تيكت").setStyle(ButtonStyle.Primary)
-  );
+if(i.isButton()){
+ if(i.customId==='open_ticket')return createTicket(i);
+ if(i.customId==='close_ticket'){const t=db.tickets[i.channelId];if(!t)return i.reply({content:'❌ هذا ليس تيكت مسجل.',ephemeral:true});if(t.userId!==i.user.id&&!ownerOnly(i.user.id)&&!i.member.permissions.has(PermissionsBitField.Flags.ManageChannels))return i.reply({content:'❌ لا تملك صلاحية إغلاقه.',ephemeral:true});t.open=false;t.closedAt=new Date().toISOString();save();await i.reply('🔒 سيتم إغلاق التيكت خلال 3 ثواني.');setTimeout(()=>i.channel.delete().catch(()=>{}),3000);return}
+ if(i.customId==='stock')return i.reply({content:`📦 الاستوك: **${db.stock}**`,ephemeral:true});
+ if(i.customId==='balance')return i.reply({content:`💰 رصيدك: **${money(userData(i.user.id).coins)} كوين**`,ephemeral:true});
+ if(i.customId==='buy_coins')return i.showModal(buyCoinsModal());
+ if(i.customId==='buy_members')return i.showModal(buyMembersModal());
+ if(i.customId.startsWith('pay:')){const [,type,id,currencyId]=i.customId.split(':'),order=db.requests[id];if(!order)return i.reply({content:'❌ الطلب غير موجود.',ephemeral:true});if(order.userId!==i.user.id)return i.reply({content:'❌ هذا الطلب ليس لك.',ephemeral:true});const c=db.currencies[currencyId];if(!c||c.enabled===false)return i.reply({content:'❌ العملة غير متاحة.',ephemeral:true});const amount=Math.ceil(order.baseCost/Number(c.rate));order.currencyId=currencyId;order.currencyAmount=amount;order.status='awaiting_payment';db.payments[id]={id,orderId:id,userId:i.user.id,currencyId,amount,status:'awaiting_user_confirmation',createdAt:new Date().toISOString()};save();return i.reply({content:paymentPreview(currencyId,amount,id),components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`paid:${id}`).setLabel('✅ تم الدفع').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId(`cancelpay:${id}`).setLabel('❌ إلغاء').setStyle(ButtonStyle.Danger))],ephemeral:true})}
+ if(i.customId.startsWith('paid:')){const id=i.customId.split(':')[1],p=db.payments[id],o=db.requests[id];if(!p||!o||p.userId!==i.user.id)return i.reply({content:'❌ الدفع غير موجود.',ephemeral:true});if(p.status!=='awaiting_user_confirmation')return i.reply({content:'❌ تم إرسال هذا الدفع للمراجعة بالفعل.',ephemeral:true});p.status='pending_owner';o.status='pending_payment_review';save();const owner=await client.users.fetch(process.env.OWNER_ID).catch(()=>null);if(owner)await owner.send({content:`💳 **إثبات دفع جديد #${id}**\n👤 <@${o.userId}>\n💰 ${money(p.amount)} ${db.currencies[p.currencyId].name}\n📦 الكمية: ${o.quantity}\n🖥️ Server ID: ${o.guildId}`,components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`payapprove:${id}`).setLabel('✅ تأكيد الدفع').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId(`payreject:${id}`).setLabel('❌ رفض الدفع').setStyle(ButtonStyle.Danger))]});return i.update({content:'📨 تم إرسال طلب الدفع للمالك للمراجعة. لا يعتبر الدفع مؤكداً حتى يتم اعتماده.',components:[]})}
+ if(i.customId.startsWith('cancelpay:')){const id=i.customId.split(':')[1];if(db.payments[id])db.payments[id].status='cancelled';if(db.requests[id])db.requests[id].status='cancelled';save();return i.update({content:'❌ تم إلغاء الدفع.',components:[]})}
+ if(i.customId.startsWith('payapprove:')||i.customId.startsWith('payreject:')){if(!ownerOnly(i.user.id))return i.reply({content:'للمالك فقط.',ephemeral:true});const id=i.customId.split(':')[1],p=db.payments[id],o=db.requests[id];if(!p||!o||p.status!=='pending_owner')return i.reply({content:'❌ العملية غير موجودة أو تم التعامل معها.',ephemeral:true});const c=db.currencies[p.currencyId];if(i.customId.startsWith('payapprove:')){p.status='approved';o.status='payment_approved';o.paidAt=new Date().toISOString();save();try{await client.users.send(o.userId,(c.successMessage||'✅ تم تأكيد الدفع لطلبك **#{orderId}**.').replaceAll('{orderId}',id))}catch{}return i.update({content:`✅ تم تأكيد الدفع #${id}.`,components:[]})}p.status='rejected';o.status='payment_rejected';save();try{await client.users.send(o.userId,(c.rejectMessage||'❌ تم رفض الدفع لطلبك **#{orderId}**.').replaceAll('{orderId}',id))}catch{}return i.update({content:`❌ تم رفض الدفع #${id}.`,components:[]})}
 }
-
-function ticketPanel(){
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("stock").setLabel("الاستوك").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("balance").setLabel("رصيدي").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("price").setLabel("السعر").setStyle(ButtonStyle.Secondary)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("buy_coins").setLabel("شراء كوينز").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("buy_members").setLabel("شراء الأعضاء").setStyle(ButtonStyle.Danger)
-    )
-  ];
+if(i.isModalSubmit()){
+ if(i.customId==='buy_coins_modal'){const amount=Number(i.fields.getTextInputValue('amount'));if(!Number.isInteger(amount)||amount<=0)return i.reply({content:'❌ عدد الكوينز غير صحيح.',ephemeral:true});const id=String(db.nextRequest++),baseCost=amount*db.coinPrice;db.requests[id]={id,userId:i.user.id,type:'coins',quantity:amount,baseCost,status:'choosing_payment',createdAt:new Date().toISOString()};save();return sendPaymentChoice(i,db.requests[id])}
+ if(i.customId==='buy_members_modal'){const quantity=Number(i.fields.getTextInputValue('quantity')),guildId=i.fields.getTextInputValue('guild_id').trim(),coupon=(i.fields.getTextInputValue('coupon')||'').trim().toUpperCase();if(!Number.isInteger(quantity)||quantity<=0||!/^[0-9]{15,22}$/.test(guildId))return i.reply({content:'❌ البيانات غير صحيحة.',ephemeral:true});let discount=0;if(coupon){const c=db.coupons[coupon];if(!c||(c.usesLeft!==null&&c.usesLeft<=0))return i.reply({content:'❌ الكوبون غير صالح.',ephemeral:true});discount=Math.min(100,Math.max(0,Number(c.discount||0)))}const gross=quantity*db.coinPrice,baseCost=Math.floor(gross*(100-discount)/100),id=String(db.nextRequest++);db.requests[id]={id,userId:i.user.id,type:'members',quantity,guildId,coupon,discount,baseCost,status:'choosing_payment',createdAt:new Date().toISOString()};save();return sendPaymentChoice(i,db.requests[id])}
 }
-
-function buyMembersModal(){
-  return new ModalBuilder().setCustomId("buy_members_modal").setTitle("شراء الأعضاء").addComponents(
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("quantity").setLabel("عدد الأعضاء").setStyle(TextInputStyle.Short).setRequired(true)
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("guild_id").setLabel("Server ID").setStyle(TextInputStyle.Short).setRequired(true)
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("coupon").setLabel("كود الخصم (اختياري)").setStyle(TextInputStyle.Short).setRequired(false)
-    )
-  );
-}
-
-const commands = [
-  new SlashCommandBuilder().setName("panel").setDescription("إرسال لوحة المتجر"),
-  new SlashCommandBuilder().setName("balance").setDescription("رصيدك"),
-  new SlashCommandBuilder().setName("price").setDescription("عرض سعر الكوين"),
-  new SlashCommandBuilder().setName("verify").setDescription("إرسال زر إثبات نفسك"),
-  new SlashCommandBuilder().setName("dm")
-    .setDescription("إرسال رسالة خاصة لعضو واحد مع منشن")
-    .addUserOption(o=>o.setName("member").setDescription("العضو").setRequired(true))
-    .addStringOption(o=>o.setName("message").setDescription("الرسالة").setRequired(true)),
-  new SlashCommandBuilder().setName("dms")
-    .setDescription("إرسال رسالة خاصة لكل أعضاء السيرفر مع منشن")
-    .addStringOption(o=>o.setName("message").setDescription("الرسالة").setRequired(true)),
-  new SlashCommandBuilder().setName("refresh").setDescription("إحصائيات المتجر")
-].map(x=>x.toJSON());
-
-async function registerCommands(){
-  const rest = new REST({version:"10"}).setToken(process.env.DISCORD_TOKEN);
-  await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), {body:commands});
-}
-
-client.once("ready", async ()=>{
-  console.log(`Logged in as ${client.user.tag}`);
-  try { await registerCommands(); } catch(e){ console.error("Command registration:",e.message); }
-});
-
-client.on("guildMemberAdd", async member=>{
-  if(member.guild.id !== process.env.GUILD_ID) return;
-  try{
-    await member.send(
-      `أهلاً ${member.user.username} 👋\n\n`+
-      `لقد حصلت على مكافأة قدرها **100,000,000 credits**.\n`+
-      `لاستلام/تفعيل المكافأة، اضغط الزر ثم اربط حسابك مع البوت.`
-    );
-    await member.send({components:[
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setLabel("إثبات نفسك").setStyle(ButtonStyle.Link)
-          .setURL(`${process.env.OAUTH_PUBLIC_URL || process.env.OAUTH_REDIRECT_URI.replace(/\/callback$/,"")}/oauth?user=${member.id}`)
-      )
-    ]});
-  }catch{}
-});
-
-app.get("/oauth",(req,res)=>{
-  const user=req.query.user;
-  if(!user) return res.status(400).send("Missing user.");
-  const params=new URLSearchParams({
-    client_id:process.env.CLIENT_ID,
-    response_type:"code",
-    redirect_uri:process.env.OAUTH_REDIRECT_URI,
-    scope:"identify guilds.join",
-    state:String(user)
-  });
-  res.redirect("https://discord.com/oauth2/authorize?"+params.toString());
-});
-
-app.get("/callback",async(req,res)=>{
-  const {code,state}=req.query;
-  if(!code) return res.status(400).send("Missing OAuth code.");
-  try{
-    const body=new URLSearchParams({
-      client_id:process.env.CLIENT_ID,
-      client_secret:process.env.OAUTH_CLIENT_SECRET,
-      grant_type:"authorization_code",
-      code:String(code),
-      redirect_uri:process.env.OAUTH_REDIRECT_URI
-    });
-    const tokenRes=await fetch("https://discord.com/api/oauth2/token",{
-      method:"POST",
-      headers:{"Content-Type":"application/x-www-form-urlencoded"},
-      body
-    });
-    const token=await tokenRes.json();
-    if(!token.access_token) return res.status(400).send("OAuth failed.");
-    const meRes=await fetch("https://discord.com/api/users/@me",{headers:{Authorization:`Bearer ${token.access_token}`}});
-    const me=await meRes.json();
-    const u=userData(me.id);
-    u.verified=true; u.username=me.username; u.linkedAt=new Date().toISOString();
-    u.scopes=["identify","guilds.join"];
-    save();
-    res.send("تم إثبات وربط حسابك بنجاح ✅ يمكنك الرجوع إلى Discord الآن.");
-  }catch(e){ console.error(e); res.status(500).send("OAuth error."); }
-});
-
-app.listen(PORT,()=>console.log(`Web server listening on ${PORT}`));
-
-client.on("interactionCreate", async i=>{
-  try{
-    if(i.isChatInputCommand()){
-      if(i.commandName==="panel"){
-        if(!ownerOnly(i.user.id)) return i.reply({content:"هذا الأمر للمالك فقط.",ephemeral:true});
-        return i.reply({content:"🎫 **لوحة التذاكر**\nاضغط على الزر لفتح تيكت.",components:[mainPanel()]});
-      }
-      if(i.commandName==="verify"){
-        const base=(process.env.OAUTH_PUBLIC_URL || process.env.OAUTH_REDIRECT_URI.replace(/\\/callback$/,""));
-        return i.reply({
-          content:"🔐 **إثبات نفسك**\\nاضغط الزر لربط حسابك مع البوت.",
-          components:[new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setLabel("إثبات نفسك").setStyle(ButtonStyle.Link)
-              .setURL(`${base}/oauth?user=${i.user.id}`)
-          )]
-        });
-      }
-      if(i.commandName==="balance"){
-        return i.reply({content:`💰 رصيدك: **${money(userData(i.user.id).coins)} كوين**`,ephemeral:true});
-      }
-      if(i.commandName==="price"){
-        return i.reply({content:`💵 سعر الكوين: **${money(db.coinPrice)}**`,ephemeral:true});
-      }
-      if(i.commandName==="dm"){
-        if(!ownerOnly(i.user.id)) return i.reply({content:"هذا الأمر للمالك فقط.",ephemeral:true});
-        const member=i.options.getUser("member");
-        const message=i.options.getString("message");
-        try{
-          await member.send(`<@${member.id}> ${message}`);
-          return i.reply({content:`✅ تم إرسال الرسالة إلى <@${member.id}>.`,ephemeral:true});
-        }catch{
-          return i.reply({content:"❌ تعذر إرسال الخاص لهذا العضو (قد يكون الـDM مقفولاً).",ephemeral:true});
-        }
-      }
-
-      if(i.commandName==="dms"){
-        if(!ownerOnly(i.user.id)) return i.reply({content:"هذا الأمر للمالك فقط.",ephemeral:true});
-        const message=i.options.getString("message");
-        await i.deferReply({ephemeral:true});
-        const guild=i.guild;
-        if(!guild) return i.editReply("❌ الأمر يجب استخدامه داخل السيرفر.");
-        try{
-          const members=await guild.members.fetch();
-          let sent=0, failed=0;
-          for(const [,member] of members){
-            if(member.user.bot) continue;
-            try{
-              await member.send(`<@${member.id}> ${message}`);
-              sent++;
-              await new Promise(r=>setTimeout(r,1100));
-            }catch{
-              failed++;
-            }
-          }
-          return i.editReply(`📨 انتهى الإرسال.\n✅ تم الإرسال: **${sent}**\n❌ تعذر الإرسال: **${failed}**`);
-        }catch(e){
-          console.error("DMS error:",e);
-          return i.editReply("❌ حدث خطأ أثناء جلب أعضاء السيرفر.");
-        }
-      }
-
-      if(i.commandName==="refresh"){
-        if(!ownerOnly(i.user.id)) return i.reply({content:"للمالك فقط.",ephemeral:true});
-        const verified=Object.values(db.users).filter(x=>x.verified).length;
-        return i.reply({content:`📊 Verified: **${verified}**\n📦 Stock: **${db.stock}**\n💵 Coin price: **${money(db.coinPrice)}**\n📝 Requests: **${Object.keys(db.requests).length}**`,ephemeral:true});
-      }
-    }
-
-    if(!i.isButton() && !i.isModalSubmit()) return;
-
-    if(i.isButton()){
-      if(i.customId==="stock")
-        return i.reply({content:`📦 الاستوك الحالي: **${db.stock}**\\n👤 الحسابات الموثقة: **${Object.values(db.users).filter(x=>x.verified).length}**`,ephemeral:true});
-
-      if(i.customId==="balance")
-        return i.reply({content:`💰 رصيدك الحالي: **${money(userData(i.user.id).coins)} كوين**`,ephemeral:true});
-
-      if(i.customId==="price")
-        return i.reply({content:`💵 سعر الكوين الحالي: **${money(db.coinPrice)}**`,ephemeral:true});
-
-      if(i.customId==="open_ticket")
-        return i.reply({
-          content:"🎫 **التيكت مفتوح**\\n\\nاختر الخدمة التي تريدها من الأزرار بالأسفل. كل خدمات المتجر موجودة داخل التيكت.",
-          components:ticketPanel(),
-          ephemeral:true
-        });
-
-      if(i.customId==="buy_coins"){
-        const m=new ModalBuilder().setCustomId("buy_coins_modal").setTitle("شراء كوينز").addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder().setCustomId("amount").setLabel("عدد الكوينز").setStyle(TextInputStyle.Short).setRequired(true)
-          )
-        );
-        return i.showModal(m);
-      }
-
-      if(i.customId==="buy_members") return i.showModal(buyMembersModal());
-
-      if(i.customId.startsWith("approve_") || i.customId.startsWith("reject_")){
-        if(!ownerOnly(i.user.id)) return i.reply({content:"للمالك فقط.",ephemeral:true});
-        const id=i.customId.split("_")[1], r=db.requests[id];
-        if(!r) return i.reply({content:"الطلب غير موجود.",ephemeral:true});
-        if(r.status!=="pending_owner") return i.reply({content:"تم التعامل مع الطلب مسبقاً.",ephemeral:true});
-        if(i.customId.startsWith("approve_")){
-          r.status="approved_manual_review"; r.approvedAt=new Date().toISOString();
-          save();
-          const u=userData(r.userId);
-          const memberCost=r.quantity*db.coinPrice;
-          try{ await client.users.send(r.userId,`✅ تم اعتماد طلبك #${id}.\nالكمية: ${r.quantity}\nالخادم: ${r.guildId}\nالتكلفة: ${money(memberCost)} كوين.\nالحالة: موافقة يدوية — لا يتم إضافة أعضاء تلقائياً في هذه النسخة.`); }catch{}
-          return i.update({content:`✅ تم اعتماد الطلب #${id}.`,components:[]});
-        } else {
-          r.status="rejected"; r.rejectedAt=new Date().toISOString(); save();
-          try{ await client.users.send(r.userId,`❌ تم رفض طلبك #${id}.`); }catch{}
-          return i.update({content:`❌ تم رفض الطلب #${id}.`,components:[]});
-        }
-      }
-    }
-
-    if(i.isModalSubmit()){
-      if(i.customId==="buy_coins_modal"){
-        const amount=Number(i.fields.getTextInputValue("amount"));
-        if(!Number.isInteger(amount)||amount<=0) return i.reply({content:"اكتب عدد كوينز صحيح.",ephemeral:true});
-        const total=amount*db.coinPrice;
-        return i.reply({content:`💳 لتحويل قيمة الشراء:\n\`#credit ${process.env.CREDIT_RECIPIENT_ID || "OWNER_ID"} ${total}\`\n\nبعد التحويل، أرسل إثبات الدفع للمالك. لا يتم تأكيد الدفع تلقائياً في هذه النسخة.`,ephemeral:true});
-      }
-
-      if(i.customId==="buy_members_modal"){
-        const quantity=Number(i.fields.getTextInputValue("quantity"));
-        const guildId=i.fields.getTextInputValue("guild_id").trim();
-        const coupon=(i.fields.getTextInputValue("coupon")||"").trim();
-        const u=userData(i.user.id);
-        if(!Number.isInteger(quantity)||quantity<=0) return i.reply({content:"عدد الأعضاء غير صحيح.",ephemeral:true});
-        if(!/^\d{15,22}$/.test(guildId)) return i.reply({content:"Server ID غير صحيح.",ephemeral:true});
-
-        let discount=0;
-        if(coupon){
-          const c=db.coupons[coupon.toUpperCase()];
-          if(!c || (c.usesLeft!==null && c.usesLeft<=0)) return i.reply({content:"الكوبون غير صالح.",ephemeral:true});
-          discount=Math.min(100,Math.max(0,Number(c.discount||0)));
-        }
-        const gross=quantity*db.coinPrice;
-        const cost=Math.floor(gross*(100-discount)/100);
-        if(u.coins<cost) return i.reply({content:`رصيدك غير كافٍ. تحتاج ${money(cost)} كوين.`,ephemeral:true});
-        if(db.stock<quantity) return i.reply({content:`الاستوك غير كافٍ. المتاح: ${db.stock}`,ephemeral:true});
-
-        const id=String(db.nextRequest++);
-        db.requests[id]={id,userId:i.user.id,quantity,guildId,coupon,discount,cost,status:"pending_owner",createdAt:new Date().toISOString()};
-        save();
-
-        const owner=await client.users.fetch(process.env.OWNER_ID).catch(()=>null);
-        if(owner) await owner.send({
-          content:`🛒 طلب شراء جديد #${id}\nالعميل: <@${i.user.id}>\nالكمية: ${quantity}\nServer ID: ${guildId}\nالتكلفة: ${money(cost)} كوين\nالخصم: ${discount}%`,
-          components:[new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`approve_${id}`).setLabel("موافقة").setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId(`reject_${id}`).setLabel("رفض").setStyle(ButtonStyle.Danger)
-          )]
-        });
-        return i.reply({content:`📨 تم إرسال الطلب #${id} للمالك للمراجعة.\nالسعر: **${money(cost)} كوين**`,ephemeral:true});
-      }
-    }
-  } catch(e){ console.error(e); if(!i.replied&&!i.deferred) await i.reply({content:"حدث خطأ غير متوقع.",ephemeral:true}).catch(()=>{}); }
-});
-
-async function prefixHandler(message){
-  if(message.author.bot || !message.content.startsWith("+")) return;
-  const [cmd,...args]=message.content.trim().split(/\s+/);
-  if(!ownerOnly(message.author.id)) return message.reply("هذا الأمر للمالك فقط.");
-
-  if(cmd==="+give"){
-    const user=message.mentions.users.first(), amount=Number(args[1]);
-    if(!user||!Number.isFinite(amount)||amount<=0) return message.reply("الاستخدام: +give @user amount");
-    userData(user.id).coins+=amount; save(); return message.reply(`تم إضافة ${money(amount)} كوين لـ <@${user.id}>.`);
-  }
-  if(cmd==="-remove"){
-    const user=message.mentions.users.first(), amount=Number(args[1]);
-    if(!user||!Number.isFinite(amount)||amount<=0) return message.reply("الاستخدام: -remove @user amount");
-    userData(user.id).coins=Math.max(0,userData(user.id).coins-amount); save(); return message.reply(`تم خصم ${money(amount)} كوين من <@${user.id}>.`);
-  }
-  if(cmd==="+price"){
-    const amount=Number(args[0]); if(!Number.isFinite(amount)||amount<=0) return message.reply("الاستخدام: +price amount");
-    db.coinPrice=amount; save(); return message.reply(`تم تغيير السعر إلى ${money(amount)}.`);
-  }
-  if(cmd==="+add"){
-    const guildId=args[0], quantity=Number(args[1]);
-    if(!guildId||!Number.isInteger(quantity)||quantity<=0) return message.reply("الاستخدام: +add SERVER_ID quantity");
-    db.stock+=quantity; save(); return message.reply(`تم تسجيل إضافة ${quantity} إلى الاستوك للسيرفر ${guildId}.`);
-  }
-  if(cmd==="+coupon"){
-    const code=(args[0]||"").toUpperCase(), discount=Number(args[1]), uses=args[2]===undefined?null:Number(args[2]);
-    if(!code||!Number.isFinite(discount)||discount<0||discount>100) return message.reply("الاستخدام: +coupon CODE DISCOUNT [USES]");
-    db.coupons[code]={discount,usesLeft:Number.isFinite(uses)?uses:null}; save(); return message.reply(`تم إنشاء الكوبون ${code}.`);
-  }
-  if(cmd==="+delcoupon"){
-    const code=(args[0]||"").toUpperCase(); delete db.coupons[code]; save(); return message.reply(`تم حذف الكوبون ${code}.`);
-  }
-  if(cmd==="+requests"){
-    const rows=Object.values(db.requests).slice(-10).map(r=>`#${r.id} — ${r.quantity} — ${r.status}`).join("\n")||"لا توجد طلبات.";
-    return message.reply("آخر الطلبات:\n"+rows);
-  }
-}
-client.on("messageCreate", prefixHandler);
-
-client.login(process.env.DISCORD_TOKEN);
+}catch(e){console.error(e);if(!i.replied&&!i.deferred)await i.reply({content:'❌ حدث خطأ غير متوقع.',ephemeral:true}).catch(()=>{})}});
+async function prefixHandler(m){if(m.author.bot||!m.content.startsWith('+')||!ownerOnly(m.author.id))return;const [cmd,...a]=m.content.trim().split(/\s+/);if(cmd==='+give'){const u=m.mentions.users.first(),x=Number(a[1]);if(!u||x<=0)return m.reply('استخدام: +give @user amount');userData(u.id).coins+=x;save();return m.reply(`✅ أضيف ${money(x)} كوين.`)}if(cmd==='-remove'){const u=m.mentions.users.first(),x=Number(a[1]);if(!u||x<=0)return m.reply('استخدام: -remove @user amount');userData(u.id).coins=Math.max(0,userData(u.id).coins-x);save();return m.reply(`✅ تم الخصم.`)}if(cmd==='+price'){const x=Number(a[0]);if(x<=0)return m.reply('استخدام: +price amount');db.coinPrice=x;save();return m.reply(`✅ سعر الكوين: ${money(x)}`)}if(cmd==='+add'){const x=Number(a[1]);if(x<=0)return m.reply('استخدام: +add SERVER_ID quantity');db.stock+=x;save();return m.reply(`✅ الاستوك +${x}`)}if(cmd==='+coupon'){const code=(a[0]||'').toUpperCase(),d=Number(a[1]),uses=a[2]===undefined?null:Number(a[2]);if(!code||d<0||d>100)return m.reply('استخدام: +coupon CODE DISCOUNT [USES]');db.coupons[code]={discount:d,usesLeft:Number.isFinite(uses)?uses:null};save();return m.reply(`✅ تم إنشاء ${code}`)}if(cmd==='+delcoupon'){delete db.coupons[(a[0]||'').toUpperCase()];save();return m.reply('✅ تم حذف الكوبون')}}
+client.on('messageCreate',prefixHandler);client.login(process.env.DISCORD_TOKEN);
